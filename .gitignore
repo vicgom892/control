@@ -1,0 +1,11 @@
+# Archivos sensibles
+*.txt
+*.log
+.env
+
+# Archivos del sistema
+Thumbs.db
+.DS_Store
+
+# Dependencias (si las hay)
+node_modules/
