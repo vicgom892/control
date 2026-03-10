@@ -20,8 +20,8 @@ const urlsToCache = [
 
 // Recursos que se actualizan frecuentemente (estrategia network-first)
 const dynamicResources = [
-  '/api/', // Si tuvieras API
-  '/data/' // Si tuvieras datos dinámicos
+  //'/api/', // Si tuvieras API
+  //'/data/' // Si tuvieras datos dinámicos
 ];
 
 // ========== INSTALACIÓN ==========
