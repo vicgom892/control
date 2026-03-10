@@ -159,24 +159,44 @@ async function staleWhileRevalidateStrategy(request) {
   const cache = await caches.open(CACHE_NAME);
   const cachedResponse = await cache.match(request);
   
-  const networkPromise = fetch(request).then(networkResponse => {
-    if (networkResponse.ok) {
-      cache.put(request, networkResponse.clone());
-    }
-    return networkResponse;
-  }).catch(error => {
-    console.warn('⚠️ [SW] Network error:', error);
-    return null;
-  });
-
+  // Si tenemos respuesta en caché, la devolvemos y actualizamos en segundo plano
   if (cachedResponse) {
-    // Devolver cache primero y actualizar en segundo plano
-    event.waitUntil(networkPromise);
+    // Actualizar caché en segundo plano (sin await para no bloquear)
+    fetch(request).then(networkResponse => {
+      if (networkResponse && networkResponse.ok) {
+        cache.put(request, networkResponse.clone()).catch(err => 
+          console.warn('⚠️ [SW] No se pudo actualizar caché:', err)
+        );
+      }
+    }).catch(error => {
+      console.warn('⚠️ [SW] Error en fetch para actualizar caché:', error);
+    });
+    
     return cachedResponse;
   }
 
-  // Si no hay cache, esperar la red
-  return networkPromise || new Response('Recurso no encontrado', { status: 404 });
+  // Si no hay caché, intentamos con la red
+  try {
+    const networkResponse = await fetch(request);
+    if (networkResponse && networkResponse.ok) {
+      // Guardar en caché para futuras solicitudes
+      cache.put(request, networkResponse.clone()).catch(err => 
+        console.warn('⚠️ [SW] No se pudo guardar en caché:', err)
+      );
+    }
+    return networkResponse;
+  } catch (error) {
+    console.warn('❌ [SW] Error fetching (sin caché):', request.url, error);
+    
+    // Si es una navegación y no hay caché ni red, mostrar offline.html
+    if (request.mode === 'navigate') {
+      const offlineCache = await caches.open(STATIC_CACHE_NAME);
+      const offlinePage = await offlineCache.match('/offline.html');
+      if (offlinePage) return offlinePage;
+    }
+    
+    return new Response('Recurso no disponible', { status: 503 });
+  }
 }
 
 // ========== MANEJO DE BACKGROUND SYNC (opcional) ==========
