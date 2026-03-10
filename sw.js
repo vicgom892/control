@@ -1,6 +1,6 @@
 // ============================================
 // SERVICE WORKER - GTC PRO PANEL
-// Versión 2.0 - Robusto y Profesional
+// Versión 2.1 - Corregido y Robusto
 // ============================================
 
 const CACHE_NAME = 'gtc-panel-v2';
@@ -18,31 +18,38 @@ const urlsToCache = [
   'https://cdn.jsdelivr.net/npm/chart.js'
 ];
 
-// Recursos que se actualizan frecuentemente (estrategia network-first)
-const dynamicResources = [
-  //'/api/', // Si tuvieras API
-  //'/data/' // Si tuvieras datos dinámicos
-];
-
 // ========== INSTALACIÓN ==========
 self.addEventListener('install', event => {
   console.log('📦 [SW] Instalando Service Worker...');
   
   event.waitUntil(
     Promise.all([
-      // Cachear archivos estáticos
-      caches.open(STATIC_CACHE_NAME).then(cache => {
+      // Cachear archivos estáticos con manejo de errores individual
+      caches.open(STATIC_CACHE_NAME).then(async cache => {
         console.log('✅ [SW] Cacheando archivos estáticos');
-        return cache.addAll(urlsToCache).catch(error => {
-          console.error('❌ [SW] Error cacheando archivos:', error);
-          // No fallar la instalación si algún archivo no se puede cachear
-        });
+        
+        const results = await Promise.allSettled(
+          urlsToCache.map(async url => {
+            try {
+              await cache.add(url);
+              console.log(`✅ Cacheado: ${url}`);
+            } catch (error) {
+              console.warn(`⚠️ No se pudo cachear: ${url}`, error.message);
+            }
+          })
+        );
+        
+        const fallos = results.filter(r => r.status === 'rejected').length;
+        if (fallos > 0) {
+          console.warn(`⚠️ [SW] ${fallos} archivos no se pudieron cachear`);
+        }
       }),
-      // Inicializar cache para API
+      
       caches.open(API_CACHE_NAME)
+      
     ]).then(() => {
       console.log('✅ [SW] Instalación completada');
-      self.skipWaiting(); // Activar inmediatamente
+      self.skipWaiting();
     })
   );
 });
@@ -53,7 +60,6 @@ self.addEventListener('activate', event => {
   
   event.waitUntil(
     Promise.all([
-      // Limpiar caches viejos
       caches.keys().then(cacheNames => {
         return Promise.all(
           cacheNames.map(cacheName => {
@@ -64,7 +70,6 @@ self.addEventListener('activate', event => {
           })
         );
       }),
-      // Reclamar clientes para controlar todas las pestañas
       self.clients.claim()
     ]).then(() => {
       console.log('✅ [SW] Activación completada');
@@ -77,7 +82,6 @@ self.addEventListener('fetch', event => {
   const request = event.request;
   const url = new URL(request.url);
 
-  // Estrategia para archivos estáticos (cache-first)
   if (urlsToCache.includes(url.pathname) || 
       request.destination === 'style' || 
       request.destination === 'script' || 
@@ -88,13 +92,6 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // Estrategia para API/datos (network-first con fallback a cache)
-  if (url.pathname.includes('/api/') || url.pathname.includes('/data/')) {
-    event.respondWith(networkFirstStrategy(request));
-    return;
-  }
-
-  // Estrategia por defecto (stale-while-revalidate)
   event.respondWith(staleWhileRevalidateStrategy(request));
 });
 
@@ -118,7 +115,6 @@ async function staticCacheStrategy(request) {
   } catch (error) {
     console.warn('❌ [SW] Error fetching:', request.url, error);
     
-    // Si es una página HTML y no hay internet, mostrar offline.html
     if (request.mode === 'navigate') {
       const offlinePage = await cache.match('/offline.html');
       if (offlinePage) return offlinePage;
@@ -128,33 +124,7 @@ async function staticCacheStrategy(request) {
   }
 }
 
-// 2. Network First - Para datos dinámicos
-async function networkFirstStrategy(request) {
-  const cache = await caches.open(API_CACHE_NAME);
-  
-  try {
-    const networkResponse = await fetch(request);
-    if (networkResponse.ok) {
-      cache.put(request, networkResponse.clone());
-    }
-    return networkResponse;
-  } catch (error) {
-    console.warn('⚠️ [SW] Network failed, usando cache para:', request.url);
-    const cachedResponse = await cache.match(request);
-    
-    if (cachedResponse) {
-      return cachedResponse;
-    }
-    
-    // Si no hay cache ni internet, devolver error personalizado
-    return new Response(
-      JSON.stringify({ error: 'offline', message: 'Sin conexión a internet' }),
-      { status: 503, headers: { 'Content-Type': 'application/json' } }
-    );
-  }
-}
-
-// 3. Stale-While-Revalidate - Para recursos generales
+// 2. Stale-While-Revalidate (CORREGIDA - sin event)
 async function staleWhileRevalidateStrategy(request) {
   const cache = await caches.open(CACHE_NAME);
   const cachedResponse = await cache.match(request);
@@ -179,7 +149,6 @@ async function staleWhileRevalidateStrategy(request) {
   try {
     const networkResponse = await fetch(request);
     if (networkResponse && networkResponse.ok) {
-      // Guardar en caché para futuras solicitudes
       cache.put(request, networkResponse.clone()).catch(err => 
         console.warn('⚠️ [SW] No se pudo guardar en caché:', err)
       );
@@ -188,10 +157,9 @@ async function staleWhileRevalidateStrategy(request) {
   } catch (error) {
     console.warn('❌ [SW] Error fetching (sin caché):', request.url, error);
     
-    // Si es una navegación y no hay caché ni red, mostrar offline.html
     if (request.mode === 'navigate') {
-      const offlineCache = await caches.open(STATIC_CACHE_NAME);
-      const offlinePage = await offlineCache.match('/offline.html');
+      const staticCache = await caches.open(STATIC_CACHE_NAME);
+      const offlinePage = await staticCache.match('/offline.html');
       if (offlinePage) return offlinePage;
     }
     
@@ -199,62 +167,8 @@ async function staleWhileRevalidateStrategy(request) {
   }
 }
 
-// ========== MANEJO DE BACKGROUND SYNC (opcional) ==========
-self.addEventListener('sync', event => {
-  if (event.tag === 'sync-clientes') {
-    event.waitUntil(syncClientes());
-  }
-});
-
-async function syncClientes() {
-  try {
-    const cache = await caches.open('sync-queue');
-    const requests = await cache.keys();
-    
-    for (const request of requests) {
-      try {
-        const response = await fetch(request);
-        if (response.ok) {
-          await cache.delete(request);
-        }
-      } catch (error) {
-        console.error('Error sincronizando:', error);
-      }
-    }
-  } catch (error) {
-    console.error('Error en sync:', error);
-  }
-}
-
-// ========== NOTIFICACIONES PUSH (opcional) ==========
-self.addEventListener('push', event => {
-  const options = {
-    body: event.data.text(),
-    icon: '/icon-192x192.png',
-    badge: '/icon-192x192.png',
-    vibrate: [200, 100, 200],
-    data: {
-      dateOfArrival: Date.now(),
-      primaryKey: 1
-    }
-  };
-
-  event.waitUntil(
-    self.registration.showNotification('GTC Pro', options)
-  );
-});
-
-// ========== MENSAJES DESDE LA APP ==========
-self.addEventListener('message', event => {
-  if (event.data === 'skipWaiting') {
-    self.skipWaiting();
-  }
-});
-
 // ========== OFFLINE PAGE ==========
-// Crear página offline por defecto si no existe
-const offlineHTML = `
-<!DOCTYPE html>
+const offlineHTML = `<!DOCTYPE html>
 <html lang="es">
 <head>
   <meta charset="UTF-8">
@@ -262,7 +176,7 @@ const offlineHTML = `
   <title>Sin conexión - GTC Pro</title>
   <style>
     body { font-family: Arial; background: #0b0f1a; color: white; display: flex; justify-content: center; align-items: center; height: 100vh; margin: 0; }
-    .offline-card { background: #1a1f2f; padding: 40px; border-radius: 20px; text-align: center; }
+    .offline-card { background: #1a1f2f; padding: 40px; border-radius: 20px; text-align: center; max-width: 400px; }
     h1 { color: #00c2ff; }
     button { background: #00c2ff; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; }
   </style>
@@ -275,18 +189,6 @@ const offlineHTML = `
     <button onclick="window.location.reload()">Reintentar</button>
   </div>
 </body>
-</html>
-`;
+</html>`;
 
-// Cachear página offline durante la instalación
-self.addEventListener('install', event => {
-  const offlineResponse = new Response(offlineHTML, {
-    headers: { 'Content-Type': 'text/html' }
-  });
-  
-  event.waitUntil(
-    caches.open(STATIC_CACHE_NAME).then(cache => {
-      return cache.put('/offline.html', offlineResponse);
-    })
-  );
-});
+// Cachear página offline durante la instalación (ya incluido arriba)
